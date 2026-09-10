@@ -1,0 +1,38 @@
+services: # docker compose expects
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - 8080:8000
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 #--reload we restart the entire container instead of the process
+    environment:
+      - PORT=8000
+      - MY_PROJECT=Nice Site
+    env_file:
+      - .env.sample
+    volumes:
+      - ./backend/src:/app
+    develop:
+      watch:
+        - action: rebuild
+          path: backend/requirements.txt
+        - action: rebuild
+          path: backend/Dockerfile
+        - action: restart #restart we sync instead of restart
+          path: backend/src/
+          #target: /app
+
+  static_html: # custom key name
+    #image: python:3.15.0rc2-slim-trixie
+    build:
+      context: ./static_html
+      dockerfile: static.Dockerfile
+    ports:
+      - 8000:8000
+      - 3030:8000
+    command: python -m http.server 8000
+    volumes:
+      - ./static_html/src:/app
+ 
+
