@@ -6,6 +6,10 @@ on a laptop runs in CI and on the platform — no "works on my machine" gap betw
 
 **Stack:** FastAPI · SQLModel · PostgreSQL 17 · Docker Compose · Railway
 
+> **Status: active development.** The container, database, and deploy paths run end to end
+> today; the service layer is intentionally minimal while the foundation is built out.
+> Current gaps are tracked openly in the [Roadmap](#roadmap) rather than left implicit.
+
 ---
 
 ## Why this exists
