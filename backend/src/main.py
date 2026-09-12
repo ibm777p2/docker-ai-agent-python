@@ -1,7 +1,18 @@
 from fastapi import FastAPI
 import os
+from contextlib import asynccontextmanager
+from api.db import init_db
+from api.chat.routing import router as chat_router
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan (app: FastAPI): 
+    #before app startup
+    init_db()
+    yield
+    #after app startup
+    
+app = FastAPI(lifespan=lifespan)
+app.include_router(chat_router, prefix="/api/chats")
 
 MY_PROJECT = os.environ.get("MY_PROJECT") or "This is the project"
 API_KEY = os.environ.get("API_KEY")
@@ -9,6 +20,5 @@ if not API_KEY:
     raise NotImplementedError("'API_KEY' was not set")
 
 @app.get("/")
-
 def read_index():
     return{"Nice": "Site again, nice", "project_name": MY_PROJECT}

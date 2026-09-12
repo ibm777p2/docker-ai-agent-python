@@ -13,6 +13,8 @@ services: # docker compose expects
       - .env.sample
     volumes:
       - ./backend/src:/app
+    depends_on:
+      - db_service
     develop:
       watch:
         - action: rebuild
@@ -23,16 +25,31 @@ services: # docker compose expects
           path: backend/src/
           #target: /app
 
-  static_html: # custom key name
-    #image: python:3.15.0rc2-slim-trixie
-    build:
-      context: ./static_html
-      dockerfile: static.Dockerfile
+  #DATABASE_URL=postgresql+psycopg://dbuser:db-password@db_service:5432/camba
+  db_service:
+    image: postgres:17.5
     ports:
-      - 8000:8000
-      - 3030:8000
-    command: python -m http.server 8000
+      - 5432:5432
+    environment:
+      - POSTGRES_USER=dbuser
+      - POSTGRES_PASSWORD=db-password
+      - POSTGRES_DB=camba
+    #env_file:
+    #  - .env.sample-db
     volumes:
-      - ./static_html/src:/app
- 
+      - dc_managed_db_volume:/var/lib/postgresql/data
 
+  # static_html: # custom key name
+  #   #image: python:3.15.0rc2-slim-trixie
+  #   build:
+  #     context: ./static_html
+  #     dockerfile: static.Dockerfile
+  #   ports:
+  #     - 8000:8000
+  #     - 3030:8000
+  #   command: python -m http.server 8000
+  #   volumes:
+  #     - ./static_html/src:/app
+
+volumes:
+  dc_managed_db_volume:

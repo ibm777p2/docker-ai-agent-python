@@ -1,4 +1,8 @@
 FROM python:3.14-slim
+
+# host.docker.internal -> localhost
+# curl -X POST -d '{"message": "Nice site"}' http://host.docker.internal:8080/api/chats/
+RUN apt-get update && apt-get install -y curl
 #Create python virtual enviroment
 #isolate your python app and install from system-level python
 RUN python -m venv /opt/venv/
