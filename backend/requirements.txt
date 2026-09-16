@@ -2,4 +2,6 @@ fastapi==0.141.1
 uvicorn[standard]
 requests
 sqlmodel #sqlite mysql postgress
-psycopg[binary] # v3 -> postgres with python
+psycopg[binary] # v3 -> postgres with python, not 2
+langchain
+langchain-openai
