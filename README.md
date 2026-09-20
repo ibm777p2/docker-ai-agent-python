@@ -1,72 +1,86 @@
-# DeployAI — Containerized FastAPI + Postgres Service Template
+# Deploy AI Agent
 
-A production-shaped starting point for Python API (Application Programming Interface) services
-that need to be developed in containers and deployed without rewrites. The same image that runs
-on a laptop runs in CI and on the platform — no "works on my machine" gap between environments.
+A containerized multi-agent service: a FastAPI (Fast Application Programming Interface framework)
+backend that routes a single natural-language request through a LangGraph supervisor to
+specialized agents that research a topic and send real email — packaged in Docker, backed by
+PostgreSQL, and deployed on DigitalOcean App Platform.
 
-**Stack:** FastAPI · SQLModel · PostgreSQL 17 · Docker Compose · Railway
+**Stack:** FastAPI · LangGraph + LangChain · SQLModel · PostgreSQL 17 · Docker Compose · DigitalOcean
 
-> **Status: active development.** The container, database, and deploy paths run end to end
-> today; the service layer is intentionally minimal while the foundation is built out.
-> Current gaps are tracked openly in the [Roadmap](#roadmap) rather than left implicit.
+> **Status: active development.** The full path runs end to end today — request → supervisor →
+> agent → tool → SMTP (Simple Mail Transfer Protocol) → response — in local Docker and in
+> production. Hardening work is tracked openly in the [Roadmap](#roadmap) rather than left implicit.
+
+```bash
+curl -X POST https://<app>.ondigitalocean.app/api/chats/ \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Research the health benefits of running, then email the summary to me@example.com"}'
+```
+
+One request. The supervisor researches the topic with one agent, hands the drafted subject and
+body to a second agent, which calls the send tool and reports back what actually happened.
 
 ---
 
 ## Why this exists
 
-Most Python API examples stop at `uvicorn main:app` on the host machine. That skips the parts
-that actually decide whether a service ships: dependency isolation, database lifecycle, config
-via environment, image portability, and a deploy target. This template starts from the container
-and works outward, so the first deploy is a configuration change rather than a re-architecture.
+Most agent demos run in a notebook against a local Python process. That hides the parts that
+decide whether an agent ships: which component is allowed to take an irreversible action, where
+identity comes from, what happens when a tool throws, and how the whole thing survives a deploy.
 
-Design decisions worth calling out:
-
-| Decision | Rationale |
-| --- | --- |
-| Virtual environment **inside** the image (`/opt/venv`) | Isolates app dependencies from the system Python in the base image; keeps `pip` upgrades from touching OS-managed packages. |
-| `requirements.txt` copied and installed **before** the source | Docker layer caching — source edits rebuild in seconds instead of reinstalling the dependency tree. |
-| Compose `develop.watch` instead of `--reload` | Restarts the *container*, not just the worker process. Code changes are validated against the real container boundary, so dev behavior matches production behavior. |
-| SQLModel over raw SQL or a heavier ORM (Object-Relational Mapper) | One class definition serves as the Pydantic validation schema, the response serializer, and the table definition — less drift between layers. |
-| `psycopg` v3 with the binary wheel | Modern driver, no local `libpq` build step, smaller and more reproducible image builds. |
-| Named volume for Postgres data | Database state survives `docker compose down` and container rebuilds; teardown is explicit (`-v`). |
-| Config strictly from environment | Twelve-factor style. The app fails fast at startup if `API_KEY` is missing rather than failing later at request time. |
-| Separate `Dockerfile` per service | The static-site service and the API build independently; neither carries the other's dependencies. |
+This service is built the other way around — container first, explicit trust boundaries, real
+side effects — so the interesting problems are the production ones.
 
 ---
 
 ## Architecture
 
 ```
-                    ┌────────────────────────────────────────────┐
-   host :8080 ─────►│ backend (python:3.14-slim)                 │
-                    │   uvicorn → FastAPI app                    │
-                    │   GET  /            service metadata       │
-                    │   ...  /api/chats/  chat router            │
-                    │   venv /opt/venv · source /app             │
-                    └────────────────┬───────────────────────────┘
-                                     │ DATABASE_URL
-                                     │ postgresql+psycopg://…@db_service:5432/camba
-                    ┌────────────────▼───────────────────────────┐
-   host :5432 ─────►│ db_service (postgres:17.5)                 │
-                    │   volume: dc_managed_db_volume             │
-                    └────────────────────────────────────────────┘
+  POST /api/chats/  {"message": "..."}
+         │
+         ▼
+  ┌──────────────────────────────────────────────────────────────┐
+  │ FastAPI  ·  persist message  ·  invoke supervisor            │
+  └───────────────────────────┬──────────────────────────────────┘
+                              ▼
+  ┌──────────────────────────────────────────────────────────────┐
+  │ SUPERVISOR  (langgraph-supervisor)                           │
+  │   routes turns · enforces "only email_agent may send"        │
+  └───────────┬──────────────────────────────┬───────────────────┘
+              ▼                              ▼
+  ┌───────────────────────┐      ┌───────────────────────────────┐
+  │ research_agent        │      │ email_agent                   │
+  │  tools:               │      │  tools:                       │
+  │   research_email      │      │   send_an_email    → SMTP SSL │
+  │    → structured draft │      │   get_unread_emails→ IMAP SSL │
+  │  cannot send email    │      │                               │
+  └───────────────────────┘      └───────────────┬───────────────┘
+                                                 │
+                                                 ▼
+                                   Gmail (SMTP send / IMAP read)
 
-   optional         ┌────────────────────────────────────────────┐
-   host :3030 ─────►│ static_html (python -m http.server)        │  (disabled in compose.yaml)
-                    └────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────┐
+  │ PostgreSQL 17 — message history (SQLModel, psycopg v3)       │
+  └──────────────────────────────────────────────────────────────┘
 ```
 
-Services resolve each other by Compose service name over the default bridge network —
-the API reaches Postgres at `db_service:5432`, never at `localhost`.
+### Design decisions
 
-### Request lifecycle
-
-1. FastAPI's `lifespan` hook runs `init_db()` at startup, creating tables from SQLModel metadata.
-2. A request hits a router mounted under `/api/chats`.
-3. `Depends(get_session)` yields a scoped SQLAlchemy/SQLModel session per request and closes it after.
-4. The payload is validated by `ChatMessagePayload`, persisted as `ChatMessage`, refreshed to pick
-   up the generated primary key, and returned through `response_model` — validated on the way in
-   *and* on the way out.
+| Decision | Rationale |
+| --- | --- |
+| **Capability separation between agents** | `research_agent` is not given the send tool at all. The boundary is structural, not a prompt instruction — an agent cannot misuse a tool it was never bound to. |
+| **Supervisor never reports success on its own** | Prompts require the supervisor to relay only what `email_agent` returned (`Sent email` / `Not sent: …`). Prevents the classic failure where a model narrates an action it never took. |
+| **Identity via `RunnableConfig`, not tool arguments** | Tool parameters are filled by the *model*; `config.configurable` is filled by *application code*. User identity flows through config, so the model can neither see nor forge it. |
+| **Tools return errors as strings, never raise** | A raised exception kills the graph; a returned `"Not sent: …"` goes back into the loop as an observation the model can reason about and report honestly. |
+| **Structured output for drafting** (`with_structured_output`) | The draft comes back as a validated `EmailMessageSchema`, not prose to be regex-parsed. Includes an `invalid_request` flag so refusals are typed rather than free text. |
+| **Hand-written agent loop kept alongside the framework** | `ai/assistants.py` implements the raw harness — transport → parse tool calls → dispatch → feed results back by `tool_call_id` → stop at `MAX_TURNS`. Demonstrates the mechanism the framework abstracts, and provides a dependency-free fallback path. |
+| **`DATABASE_URL` scheme normalization** | Managed Postgres providers hand out `postgres://` / `postgresql://`; SQLAlchemy needs the driver-qualified `postgresql+psycopg://`. Rewritten at startup so the same image accepts any provider's connection string unmodified. |
+| **Separate read model from table model** | `ChatMessageListItem` defines the wire response independently of the `ChatMessage` table, so adding a column does not silently widen the public API. |
+| **Timezone-aware `created_at`** | `DateTime(timezone=True)` at the column level — timestamps are unambiguous across regions and safe for time-series queries. |
+| **Compose `develop.watch` instead of `--reload`** | Restarts the *container*, not just the worker. Development behavior matches the deployed container boundary. |
+| **Dependency layer cached before source copy** | Source edits rebuild in seconds instead of reinstalling the LangChain dependency tree. |
+| **Virtual environment inside the image** (`/opt/venv`) | Isolates app packages from the base image's system Python. |
+| **`OPENAI_BASE_URL` left configurable** | The client is OpenAI-compatible, so pointing at Docker Model Runner (`http://model-runner.docker.internal/engines/v1`) runs the agents against a local model with no key and no per-token cost during development. |
 
 ---
 
@@ -74,63 +88,88 @@ the API reaches Postgres at `db_service:5432`, never at `localhost`.
 
 ```
 .
-├── compose.yaml              # service topology, port mapping, watch rules, volumes
-├── .env.sample               # API_KEY, DATABASE_URL
-├── .env.sample-db            # Postgres bootstrap credentials
-├── docker-commands.md        # build/push/exec/model-runner reference
+├── compose.yaml                  # topology, ports, watch rules, named volume
+├── .env.sample / .env.sample-db  # documented configuration surface
+├── docker-commands.md            # build / push / exec / model-runner reference
 ├── backend/
-│   ├── Dockerfile            # venv, cached dependency layer, source copy
-│   ├── .dockerignore         # keeps dev-only paths out of build context
-│   ├── railway.json          # deploy config: builder, watch patterns, start command
+│   ├── Dockerfile                # venv, cached dependency layer, source copy
+│   ├── .dockerignore
 │   ├── requirements.txt
+│   ├── railway.json              # alternate deploy target config
 │   └── src/
-│       ├── main.py           # app factory, lifespan, env validation, router mounting
+│       ├── main.py               # app factory, lifespan, fail-fast env validation
 │       └── api/
-│           ├── db.py         # engine, init_db(), get_session() dependency
-│           └── chat/
-│               ├── models.py # payload schema + table model
-│               └── routing.py# APIRouter endpoints
-└── static_html/              # optional static-asset service
+│           ├── db.py             # engine, URL normalization, session dependency
+│           ├── chat/             # payload / table / read models + router
+│           ├── ai/
+│           │   ├── llms.py       # OpenAI-compatible client factory
+│           │   ├── schemas.py    # structured-output contracts
+│           │   ├── services.py   # structured draft generation
+│           │   ├── tools.py      # @tool definitions, config-scoped identity
+│           │   ├── agents.py     # react agents + supervisor graph
+│           │   └── assistants.py # hand-rolled agent loop
+│           └── emailer/
+│               ├── sender.py             # SMTP over SSL
+│               ├── inbox_reader.py       # inbox query wrapper
+│               └── gmail_imap_parser.py  # ~800-line IMAP client
+└── static_html/                  # optional static-asset service
 ```
+
+### The IMAP layer
+
+`gmail_imap_parser.py` is a full Internet Message Access Protocol (IMAP) client rather than a
+thin wrapper, because reading a real inbox is messier than it looks:
+
+- **UID-based addressing** — sequence numbers shift as the mailbox changes; unique identifiers don't.
+- **Non-destructive reads** — fetching an unread message normally marks it read. The parser
+  restores the unread flag, so the agent can inspect an inbox without mutating the user's state.
+- **Flexible search criteria** — relative windows (hours / days / minutes), absolute ranges,
+  sender filters, and unread-only, composed into valid IMAP search syntax.
+- **Multipart body extraction** with header decoding (RFC 2047 encoded words, mixed charsets).
+- **Multi-folder search** and graceful teardown on broken sockets.
 
 ---
 
 ## Running it
 
-**Prerequisites:** Docker Desktop (or Docker Engine + Compose v2).
+**Prerequisites:** Docker Desktop (or Docker Engine + Compose v2), an OpenAI-compatible API key,
+and a Gmail app password if you want live email.
 
 ```bash
 git clone https://github.com/ibm777p2/docker-ai-agent-python.git
 cd docker-ai-agent-python
-cp .env.sample .env.local        # then set a real API_KEY
+cp .env.sample .env          # fill in real values
 docker compose up --build
 ```
 
-Live-reload development, using Compose's watch rules:
+Development with live restart:
 
 ```bash
 docker compose up --watch
 ```
 
-`backend/src/` changes restart the container; `requirements.txt` or `Dockerfile` changes
-trigger a full rebuild.
-
 Teardown:
 
 ```bash
-docker compose down        # keep database volume
-docker compose down -v     # drop database volume as well
+docker compose down          # keep database volume
+docker compose down -v       # drop it
 ```
 
-### Environment
+Local API at `http://localhost:8080`, interactive docs at `/docs`, OpenAPI schema at `/openapi.json`.
 
-| Variable | Used by | Purpose |
-| --- | --- | --- |
-| `API_KEY` | backend | Required. App raises at startup if unset — misconfiguration surfaces immediately, not on first request. |
-| `DATABASE_URL` | backend | `postgresql+psycopg://dbuser:db-password@db_service:5432/camba` |
-| `MY_PROJECT` | backend | Display name returned by the index route. |
-| `PORT` | backend | Container-side listen port (8000). |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | db_service | Database bootstrap. |
+### Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `API_KEY` | Required. Startup fails immediately if unset — misconfiguration surfaces at boot, not at first request. |
+| `DATABASE_URL` | Postgres connection string; any common scheme is normalized at startup. |
+| `OPENAI_API_KEY` | Required by the language-model client. |
+| `OPENAI_MODEL_NAME` | Model identifier (default `gpt-4o-mini`). |
+| `OPENAI_BASE_URL` | Optional. Point at Docker Model Runner for local inference. |
+| `EMAIL_ADDRESS` / `EMAIL_PASSWORD` | Gmail account and **app password** — never an account password. |
+| `EMAIL_HOST` / `EMAIL_PORT` | SMTP endpoint (defaults `smtp.gmail.com:465`). |
+| `MY_PROJECT` | Display name on the index route. |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database bootstrap. |
 
 Sample files are committed for onboarding; real `.env` files are gitignored.
 
@@ -138,40 +177,34 @@ Sample files are committed for onboarding; real `.env` files are gitignored.
 
 ## API surface
 
-Interactive docs are generated from the type annotations at `http://localhost:8080/docs`
-(OpenAPI schema at `/openapi.json`).
-
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/` | Service metadata / liveness. |
 | `GET` | `/api/chats/` | Router health check. |
-| `GET` | `/api/chats/recent/` | Ten most recent messages. |
-| `POST` | `/api/chats/` | Validate and persist a message; returns the row with its generated id. |
+| `GET` | `/api/chats/recent/` | Ten most recent messages, via the read model. |
+| `POST` | `/api/chats/` | Persist the message, run it through the supervisor, return the final agent turn. |
 
 ```bash
-curl http://localhost:8080/
-
+# plain generation
 curl -X POST http://localhost:8080/api/chats/ \
   -H "Content-Type: application/json" \
-  -d '{"message": "hello from the host"}'
+  -d '{"message": "Summarize the benefits of running"}'
 
+# research, then a real send — exercises both agents and the handoff
+curl -X POST http://localhost:8080/api/chats/ \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Research the benefits of running then email the summary to me@example.com"}'
+
+# history
 curl http://localhost:8080/api/chats/recent/
-```
-
-From inside another container, the host is reachable at `host.docker.internal`:
-
-```bash
-curl -X POST http://host.docker.internal:8080/api/chats/ \
-  -H "Content-Type: application/json" -d '{"message": "hello from a container"}'
 ```
 
 ---
 
 ## Local model inference
 
-The template targets workloads that call a language model, and Docker Model Runner keeps that
-dependency local during development — no vendor key, no per-token cost, no network round trip
-while iterating.
+The client is OpenAI-compatible, so development can run entirely offline against Docker Model
+Runner — no vendor key, no per-token cost, no network round trip while iterating on prompts.
 
 ```bash
 # from the host
@@ -185,16 +218,27 @@ curl http://model-runner.docker.internal/engines/v1/chat/completions \
   -d '{"model": "ai/gemma3", "messages": [{"role": "user", "content": "ping"}]}'
 ```
 
-The endpoint is OpenAI-compatible, so the same client code points at a hosted provider in
-production by swapping a base URL and adding a key.
+Set `OPENAI_BASE_URL=http://model-runner.docker.internal/engines/v1` and the agents use it with
+no code change.
 
 ---
 
 ## Deployment
 
-`backend/railway.json` builds from the Dockerfile rather than a buildpack, so the deployed
-artifact is the image that was tested locally. `watchPatterns` scope redeploys to the paths that
-actually affect the build, and `startCommand` runs uvicorn bound to `0.0.0.0`.
+Deployed on **DigitalOcean App Platform**, built from `backend/Dockerfile` rather than a
+buildpack — the deployed artifact is the image that was tested locally, not a re-derived one.
+Managed Postgres is attached via `DATABASE_URL`, which the startup normalization accepts in
+whatever scheme the platform injects. Secrets are supplied as platform environment variables and
+never committed.
+
+```bash
+curl -X POST https://<app>.ondigitalocean.app/api/chats/ \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Summarize the benefits of running"}'
+```
+
+`backend/railway.json` remains in the repository as a second, working deploy configuration —
+the containerized build is portable across platforms by design.
 
 Publishing the image directly:
 
@@ -209,22 +253,26 @@ See `docker-commands.md` for the full build, exec, and cleanup reference.
 
 ## Roadmap
 
-Tracked deliberately — this is a template in progress, and each item below is a known gap
-rather than an oversight.
+Known gaps, tracked deliberately.
 
-- [ ] **Alembic migrations.** `SQLModel.metadata.create_all()` creates tables but does not version
-      schema changes; migrations are required before any real data lands in it.
-- [ ] **Pin the image's default `CMD` to uvicorn.** Compose and Railway both override it today;
-      the image should be correct standalone.
-- [ ] **Compose healthcheck + `depends_on: condition: service_healthy`** so the API waits for
-      Postgres to accept connections instead of just for the container to exist.
-- [ ] **Non-root container user** and a multi-stage build to drop build-time tooling from the
-      runtime layer.
-- [ ] **API key authentication middleware** — the key is validated as present, not yet enforced
-      on requests.
-- [ ] **Pytest suite** against a throwaway Postgres service, with FastAPI's `TestClient`.
+- [ ] **Authentication on `/api/chats/`.** The endpoint can send email; `API_KEY` is currently
+      validated as present at startup but not enforced per request. This is the top priority.
+- [ ] **Recipient allowlist and rate limiting** on the send tool — hard limits that a prompt
+      cannot talk its way past.
+- [ ] **Move supervisor execution off the request path.** A multi-agent run is measured in
+      seconds; it belongs in a background task with a job id and a polling or streaming endpoint.
+- [ ] **Persist agent turns and tool calls**, not just the inbound message — an audit trail of
+      what each agent did and which tools fired.
+- [ ] **Alembic migrations.** `create_all()` builds tables but does not version schema changes.
+- [ ] **Pin the image's default `CMD` to uvicorn.** Compose and the platform both override it
+      today; the image should be correct standalone.
+- [ ] **Compose healthcheck** with `depends_on: condition: service_healthy`, so the API waits for
+      Postgres to accept connections rather than merely to exist.
+- [ ] **Non-root container user** and a multi-stage build to drop build tooling from the runtime layer.
+- [ ] **Test suite** — pytest against a throwaway Postgres service, with tool calls stubbed so
+      agent routing can be asserted without sending real email.
 - [ ] **GitHub Actions**: lint, test, build, push on tag.
-- [ ] **Structured JSON logging and `/health` readiness split** (liveness vs. dependency checks).
+- [ ] **Structured JSON logging** and a readiness endpoint separate from liveness.
 - [ ] **Pinned transitive dependencies** via `pip-compile` for reproducible builds.
 
 ---
