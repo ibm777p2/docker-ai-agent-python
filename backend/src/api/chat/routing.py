@@ -27,13 +27,14 @@ def chat_list_messages(session: Session= Depends(get_session)):
 # curl -X POST -d '{"message": "Nice site"}' -H "Content-type: application/json" http://localhost:8080/api/chats/
 # curl -X POST -d '{"message": "Nice site"}' -H "Content-type: application/json" https://docker-fastapi-python-app-{digital ocean id}.ondigitalocean.app/api/chats/
 
-
+# Local run for testing
 # curl -X POST -d '{"message": "Give me a summary of why is good running a lot"}' -H "Content-type: application/json" http://localhost:8080/api/chats/
 # curl -X POST -d '{"message": "Give me a python code in a loop from 1 to 10 add 1 each time starting by 0"}' -H "Content-type: application/json" http://localhost:8080/api/chats/
+# curl -X POST -d '{"message": "Research why is good running a lot then send results to ibm777p2@gmail.com"}' -H "Content-type: application/json" http://localhost:8080/api/chats/
 
 # In digital ocean
 # curl -X POST -d '{"message": "Give me a summary of why is good running a lot"}' -H "Content-type: application/json" https://docker-fastapi-python-app-{digital ocean id}.ondigitalocean.app/api/chats/
-# curl -X POST -d '{"message": "Research why is good running a lot then send results to ibm777p2@gmail.com"}' -H "Content-type: application/json" http://localhost:8080/api/chats/
+# curl -X POST -d '{"message": "Research why is good running a lot then send results to ibm777p2@gmail.com"}' -H "Content-type: application/json" hhttps://docker-fastapi-python-app-{digital ocean id}.ondigitalocean.app/api/chats/
 
 @router.post("/", response_model=SupervisorMessageSchema)
 def chat_create_message(
