@@ -83,12 +83,12 @@ curl http://localhost:12434/engines/v1/chat/completions \
     }'
 ```
 
-_From host terminal_gemma4:E2B
+_From host terminal_gemma4
 ```bash  
 curl http://localhost:12434/engines/v1/chat/completions \
     -H "Content-Type: application/json" \
     -d '{
-        "model": "ai/gemma4:E2B",
+        "model": "ai/gemma4",
         "messages": [
             {
                 "role": "system",
@@ -122,12 +122,12 @@ curl http://model-runner.docker.internal/engines/v1/chat/completions \
     }'
 ```
 
-_From within a container_gemma4:E2B
+_From within a container_gemma4
 ```bash
 curl http://model-runner.docker.internal/engines/v1/chat/completions \
     -H "Content-Type: application/json" \
     -d '{
-        "model": "ai/gemma4:E2B",
+        "model": "ai/gemma4",
         "messages": [
             {
                 "role": "system",
