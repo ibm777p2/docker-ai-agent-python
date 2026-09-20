@@ -15,7 +15,11 @@ def get_email_agent():
     agent = create_react_agent (
         model=model,
         tools=EMAIL_TOOLS_LIST,
-        prompt="You are a helpful assistant for my managing my email inbox for generating, sending and reviewing emails.",
+        prompt=(
+            "You manage my email inbox. When asked to send an email, you MUST call "
+            "the send_an_email tool with subject, content and to_email. "
+            "Report exactly what the tool returned ('Sent email' or 'Not sent: ...')."
+        ),
         name="email_agent"
     )
 
@@ -24,13 +28,16 @@ def get_email_agent():
 # agent.invoke({"messages": "research the health benefits of running and draft an email about it"}, config={"configurable": {"additional_field": "123"}})    
 def get_research_agent():
     model = get_openai_llm()
-    agent = create_react_agent (
+    return create_react_agent(
         model=model,
         tools=[research_email],
-        name ='research_agent',
+        prompt=(
+            "You are a research assistant. Always use the research_email tool. "
+            "You CANNOT send emails. Never say an email was sent. "
+            "Return only the research results."
+        ),
+        name="research_agent",
     )
-
-    return agent
 
 
 # supe = get_supervisor() 
@@ -43,8 +50,11 @@ def get_supervisor():
         agents=[email_agent, research_agent],
         model = llm,
         prompt=(
-            "You manage a research assistant and an"
-            "email inbox manager assistant. Assign work to them"            
+            "You manage a research_agent and an email_agent. "
+            "Only email_agent can send emails. "
+            "If the user asks to send or email something, you MUST transfer to email_agent "
+            "after research, passing the subject, content and recipient address. "
+            "Never tell the user an email was sent unless email_agent reports 'Sent email'."            
         )
         
     ).compile()
